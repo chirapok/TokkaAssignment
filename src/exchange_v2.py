@@ -55,6 +55,10 @@ class SWRParams:
     tick_size: float = 0.001
     ttl_ms: int = 100
 
+    min_regime_hold_ms: int = 150
+    enter_need_quotes: int = 1
+    cooldown_ms: int = 300
+
 class ToxicityTracker:
     def __init__(self, window_us: int):
         self.window_us = int(window_us)
@@ -470,6 +474,9 @@ class OpportunisticSpreadWidenMM:
         self.tox = ToxicityTracker(window_us=params.tox_window_ms * 1000)
 
         self.in_regime = False  # spread-widen regime state (hysteresis)
+        self.regime_enter_ts_us: Optional[int] = None
+        self.enter_streak = 0
+        self.cooldown_until_ts_us = 0
 
     def _slog(self, ctx, action, **kwargs):
         if self.logger is None:
@@ -551,16 +558,61 @@ class OpportunisticSpreadWidenMM:
         if not np.isfinite(med) or med <= 0:
             self.in_regime = False
         else:
-            enter = spread_bps > max(self.p.spread_floor_bps, self.p.k_enter * med)
-            exit_ = spread_bps < max(self.p.spread_floor_bps, self.p.k_exit * med)
-            if (not self.in_regime) and enter:
+            # enter = spread_bps > max(self.p.spread_floor_bps, self.p.k_enter * med)
+            # exit_ = spread_bps < max(self.p.spread_floor_bps, self.p.k_exit * med)
+
+            enter_cond = spread_bps > max(self.p.spread_floor_bps, self.p.k_enter * med)
+            exit_cond = spread_bps < max(self.p.spread_floor_bps, self.p.k_exit * med)
+
+            if ts_us < self.cooldown_until_ts_us:
+                # force no entry during cooldown
+                enter_cond = False
+
+            if enter_cond:
+                self.enter_streak += 1
+            else:
+                self.enter_streak = 0
+
+            if (not self.in_regime) and (self.enter_streak >= self.p.enter_need_quotes):
+            #if (not self.in_regime) and enter:
                 self.in_regime = True
-            elif self.in_regime and exit_:
-                self.in_regime = False
+                self.regime_enter_ts_us = ts_us
+                self.enter_streak = 0
+            elif self.in_regime and exit_cond:
+                # minimum hold protection
+                hold_us = self.p.min_regime_hold_ms * 1000
+                if self.regime_enter_ts_us is not None:
+                    if ts_us - self.regime_enter_ts_us < hold_us:
+                        # still in mandatory hold window -> ignore exit
+                        self._slog(
+                            ctx,
+                            "REGIME",
+                            reason="exit_suppressed_min_hold",
+                            elapsed_ms=(ts_us - self.regime_enter_ts_us) / 1000,
+                            pos=float(sim.pos),
+                        )
+                        pass
+                    else:
+                        self.in_regime = False
+                        self.regime_enter_ts_us = None
+                        self.cooldown_until_ts_us = ts_us + self.p.cooldown_ms * 1000
         
         if (not prev) and self.in_regime:
-            self._slog(ctx, "REGIME", reason="enter_regime",
-                       spread_bps=spread_bps, med_bps=med, pos=float(sim.pos))
+            # self._slog(ctx, "REGIME", reason="enter_regime",
+            #            spread_bps=spread_bps, med_bps=med, pos=float(sim.pos))
+            
+            # thr = max(self.p.spread_floor_bps, self.p.k_enter * med)
+            # self._slog(ctx, "REGIME", reason="enter_regime",
+            #         spread_bps=spread_bps, med_bps=med,
+            #         enter_thr_bps=thr,
+            #         enter_excess_bps=spread_bps - thr)
+            thr = max(self.p.spread_floor_bps, self.p.k_enter * med)
+            self._slog(
+                ctx, "REGIME", reason="enter_regime",
+                spread_bps=spread_bps, med_bps=med, pos=float(sim.pos),
+                enter_thr_bps=thr,
+                enter_excess_bps=spread_bps - thr
+            )
 
         if prev and (not self.in_regime):
             self._slog(ctx, "REGIME", reason="exit_regime",
@@ -579,12 +631,23 @@ class OpportunisticSpreadWidenMM:
         # Toxicity filter gating
         if not self._tox_ok():
             self._slog(ctx, "CANCEL_ALL", reason="tox_fail", pos=float(sim.pos))
+            count, total, net = self.tox.snapshot()
+            # Log reason also
+            self._slog(ctx, "CANCEL_ALL", reason="tox_fail",
+                    tox_count=count, tox_total=total, tox_net=net,
+                    spread_bps=spread_bps, med_bps=med, pos=float(sim.pos))
+            
             if self.bid_oid is not None:
                 self._slog(ctx, "CANCEL", reason="tox_fail", side="buy", order_id=int(self.bid_oid), pos=float(sim.pos))
             if self.ask_oid is not None:
                 self._slog(ctx, "CANCEL", reason="tox_fail", side="sell", order_id=int(self.ask_oid), pos=float(sim.pos))
-            self._cancel_if_exists(sim, self.bid_oid); self.bid_oid = None
-            self._cancel_if_exists(sim, self.ask_oid); self.ask_oid = None
+            
+            self._cancel_if_exists(sim, self.bid_oid)
+            self.bid_oid = None
+
+            self._cancel_if_exists(sim, self.ask_oid)
+            self.ask_oid = None
+            
             return
 
         # Inventory gating
@@ -653,26 +716,6 @@ class OpportunisticSpreadWidenMM:
                 self._slog(ctx, "CANCEL", reason="inv_gate", side="buy", order_id=int(self.bid_oid), pos=float(sim.pos))
             self._cancel_if_exists(sim, self.bid_oid)
             self.bid_oid = None
-        # if allow_bid:
-        #     replace = False
-        #     if self.bid_oid is None or self.bid_oid not in sim.orders:
-        #         replace = True
-        #     else:
-        #         o = sim.orders[self.bid_oid]
-        #         if o.is_done:
-        #             self.bid_oid = None
-        #             replace = True
-        #         else:
-        #             if abs(o.price - bid_px) > 1e-12:
-        #                 replace = True
-        #             elif self._order_age_us(sim, self.bid_oid, ts_us) > ttl_us:
-        #                 replace = True
-
-        #     if replace:
-        #         self._cancel_if_exists(sim, self.bid_oid)
-        #         self.bid_oid = sim.place_limit("buy", bid_px, self.p.qty_per_side, ts_us)
-        # else:
-        #     self._cancel_if_exists(sim, self.bid_oid); self.bid_oid = None
 
         if allow_ask:
             replace = False
@@ -717,36 +760,6 @@ class OpportunisticSpreadWidenMM:
             self._cancel_if_exists(sim, self.ask_oid)
             self.ask_oid = None
 
-# def run_backtest(events_df, quotes_df, trades_df, sim, strategy):
-#     equity = []
-#     ts_list = []
-
-#     for ev in events_df.itertuples(index=False):
-#         prev_nf = len(sim.fills)
-
-#         if ev.etype == "quote":
-#             qrow = quotes_df.iloc[ev.qidx]
-#             sim.on_quote(qrow)  # may fill (Mode 2)
-#             strategy.on_quote(sim, qrow, ts_us=int(ev.ts_us), ctx)
-
-#         else:
-#             trow = trades_df.iloc[ev.tidx]
-#             sim.on_trade(trow, ts_us=int(ev.ts_us))  # may fill (Mode 1)
-#             strategy.on_trade(sim, trow, ts_us=int(ev.ts_us), ctx)
-
-#         # mark-to-market equity (cash + pos * mid)
-#         if sim.book.is_valid():
-#             mtm = sim.cash + sim.pos * sim.book.snap.mid
-#             equity.append(mtm)
-#             ts_list.append(int(ev.ts_us))
-
-#         # (optional) inspect new fills
-#         # if len(sim.fills) > prev_nf:
-#         #     for f in sim.fills[prev_nf:]:
-#         #         pass
-
-#     eq = pd.DataFrame({"ts_us": ts_list, "equity": equity})
-#     return eq
 def run_backtest(events_df, quotes_df, trades_df, sim, strategy, logger: BTLogger):
     equity = []
     ts_list = []
