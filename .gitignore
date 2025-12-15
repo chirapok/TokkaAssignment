@@ -1,0 +1,12 @@
+*.csv
+*.png
+*.log
+*.txt
+*.pdf
+
+data/
+env/
+outputs/
+
+.ipynb_checkpoints/
+__pycache__/
