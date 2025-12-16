@@ -132,6 +132,21 @@ def summarize_symbol(quote_df: pd.DataFrame, trade_df: pd.DataFrame) -> pd.Serie
     net_signed_volume = float(flow_stats['net_signed_volume'].iloc[0])
     abs_signed_volume = float(flow_stats['abs_signed_volume'].iloc[0])
 
+    # --- 6. Distribution of time difference ---
+    #q['diff_ms'] = q['dt'].diff() / 1000
+    q['diff_ms'] = q['dt'].diff().dt.total_seconds() * 1000
+    diff_data = q['diff_ms'].dropna()
+    if not diff_data.empty:
+        diff_mean = diff_data.mean()
+        diff_median = diff_data.median()
+        diff_max = diff_data.max()
+        diff_min = diff_data.min()
+    else:
+        diff_mean = np.nan
+        diff_median = np.nan
+        diff_max = np.nan
+        diff_min = np.nan  
+
     # --- assemble results into a Series (rows of your Excel) ---
     s = pd.Series({
         'Is quote time monotonic': quote_time_mono,
@@ -139,10 +154,16 @@ def summarize_symbol(quote_df: pd.DataFrame, trade_df: pd.DataFrame) -> pd.Serie
         'Invalid quote price rows': int(len(invalid_quote_prices)),
         'Invalid quote amount rows': int(len(invalid_quote_amounts)),
         'Invalid trade rows': int(len(invalid_trade)),
-        'Crossed market rows': int(len(invalid_cross)),
+        'bid[0] >= ask[0] rows': int(len(invalid_cross)),
         'Rows invalid ASK price layer': int(ask_errors),
         'Rows invalid BID price layer': int(bid_errors),
         'How many quote dates in data': int(len(quote_dates)),
+        'How many trade dates in data': int(len(trade_dates)),
+        'Max time diff (ms) between quote': diff_max,
+        'Mean time diff (ms) between quote': diff_mean,
+        'Median time diff (ms) between quote': diff_median,
+        'Min time diff (ms) between quote': diff_min,
+        'How many trade dates in data': int(len(trade_dates)),
         'How many trade dates in data': int(len(trade_dates)),
         'Quote date': quote_date,
         'Trade date': trade_date,
