@@ -43,7 +43,7 @@ class SWRParams:
     baseline_window_ms: int = 200
     k_enter: float = 7.0
     k_exit: float = 3.0
-    spread_floor_bps: float = 0.5
+    spread_floor_bps: float = 0.5 # 0.5 for HYPE and 0.05 for SOL
 
     # toxicity window + thresholds (starter defaults)
     tox_window_ms: int = 200
@@ -53,6 +53,7 @@ class SWRParams:
 
     # execution
     tick_size: float = 0.001
+    # Did not use this one
     ttl_ms: int = 100
 
     min_regime_hold_ms: int = 150
@@ -176,7 +177,7 @@ class ExchangeSim:
         self,
         asset_name: str,
         tick_size: float,
-        maker_fee: float = 0.0002,   # 0.02%
+        maker_fee: float = 0.0000,   # 0.02%
         taker_fee: float = 0.0005,   # 0.05% (unused for now; you can add market orders later)
         latency_us: int = 5_000,     # 5 ms default; tune later
         depth_levels: int = 5,

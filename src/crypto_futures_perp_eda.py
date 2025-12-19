@@ -120,6 +120,7 @@ def summarize_symbol(quote_df: pd.DataFrame, trade_df: pd.DataFrame) -> pd.Serie
     ask_depth_mean_notional = float(depth_stats['ask_depth_mean_notional'].iloc[0])
 
     imbalance_mean = float(depth_stats['imbalance_mean'].iloc[0])
+    print(imbalance_mean)
 
     # --- 5. trade-flow stats ---
     t['signed_volume'] = np.where(t['side'] == 'buy', t['amount'], -t['amount'])
